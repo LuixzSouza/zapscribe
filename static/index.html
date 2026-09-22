@@ -3,96 +3,313 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Áudio para Texto</title>
+  <title>Zapscribe</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/static/vendor/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main class="container">
-    <header>
-      <div class="logo">🎙️</div>
-      <div>
-        <h1>Áudio para Texto</h1>
-        <p class="subtitle">Converta áudios do WhatsApp (e outros) em texto. Tudo roda no seu computador, nada sai dele.</p>
+  <div class="app">
+    <!-- ============================== Barra superior -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"><svg class="i"><use href="/static/vendor/icons.svg#i-audio-lines"/></svg></span>
+        <span class="brand-name">Zapscribe</span>
+      </div>
+
+      <label class="search">
+        <svg class="i"><use href="/static/vendor/icons.svg#i-search"/></svg>
+        <input id="search" type="search" placeholder="Buscar em títulos, textos, notas e clientes" autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+
+      <div class="settings">
+        <div class="field">
+          <span class="field-label"><svg class="i"><use href="/static/vendor/icons.svg#i-gauge"/></svg>Modelo</span>
+          <div class="segmented" id="modelPicker" role="radiogroup" aria-label="Modelo"></div>
+        </div>
+        <div class="field">
+          <span class="field-label"><svg class="i"><use href="/static/vendor/icons.svg#i-languages"/></svg>Idioma</span>
+          <div class="select">
+            <select id="language" aria-label="Idioma">
+              <option value="pt" selected>Português</option>
+              <option value="auto">Detectar</option>
+              <option value="en">Inglês</option>
+              <option value="es">Espanhol</option>
+            </select>
+            <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+          </div>
+        </div>
+        <button class="btn ghost icon-only" id="openSettings" title="Configurações">
+          <svg class="i"><use href="/static/vendor/icons.svg#i-settings"/></svg>
+        </button>
       </div>
     </header>
 
-    <section class="options">
-      <label>
-        Qualidade
-        <select id="model"></select>
-      </label>
-      <label>
-        Idioma
-        <select id="language">
-          <option value="pt" selected>Português</option>
-          <option value="auto">Detectar automaticamente</option>
-          <option value="en">Inglês</option>
-          <option value="es">Espanhol</option>
-        </select>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="timestamps"> Mostrar tempos
-      </label>
-    </section>
-
-    <label id="dropzone" class="dropzone">
-      <input type="file" id="fileInput" accept="audio/*,video/*,.ogg,.opus,.m4a,.mp3,.wav,.aac,.amr,.webm,.mp4" multiple hidden>
-      <div class="drop-icon">⬆️</div>
-      <strong>Arraste os áudios aqui</strong>
-      <span>ou clique para escolher. Pode mandar vários de uma vez, e também colar com Ctrl+V.</span>
-    </label>
-
-    <section id="toolbar" class="toolbar" hidden>
-      <div class="summary">
-        <div class="counts" id="counts"></div>
-        <div class="progress overall"><div class="bar" id="overallBar"></div></div>
-      </div>
-      <div class="toolbar-row">
-        <div class="tabs" id="tabs">
-          <button class="tab active" data-filter="all">Todos <span></span></button>
-          <button class="tab" data-filter="active">Em andamento <span></span></button>
-          <button class="tab" data-filter="done">Concluídos <span></span></button>
-          <button class="tab" data-filter="error">Erros <span></span></button>
+    <div class="workspace">
+      <!-- ============================== Lista -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <label class="btn primary block">
+            <input type="file" id="fileInput" accept="audio/*,video/*,.ogg,.opus,.m4a,.mp3,.wav,.aac,.amr,.webm,.mp4" multiple hidden>
+            <svg class="i"><use href="/static/vendor/icons.svg#i-upload"/></svg>
+            Adicionar áudios
+          </label>
+          <div class="tabs" id="tabs" role="tablist">
+            <button class="tab active" data-filter="all">Todos <span class="count"></span></button>
+            <button class="tab" data-filter="pending">Pendentes <span class="count"></span></button>
+            <button class="tab" data-filter="resolved">Resolvidos <span class="count"></span></button>
+          </div>
+          <div class="list-tools">
+            <label class="check" title="Selecionar todos visíveis">
+              <input type="checkbox" id="checkAll"><span class="box"></span>
+            </label>
+            <div class="select sm grow">
+              <select id="clientFilter" aria-label="Filtrar por cliente"></select>
+              <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+            </div>
+          </div>
         </div>
-        <div class="actions">
-          <button class="btn" id="copyAll">Copiar tudo</button>
-          <button class="btn" id="downloadAll">Baixar tudo</button>
-          <button class="btn ghost" id="clearDone">Limpar concluídos</button>
-        </div>
-      </div>
-    </section>
 
-    <section id="results"></section>
-    <p id="emptyFilter" class="empty" hidden>Nenhum áudio nesta aba.</p>
-  </main>
-
-  <template id="cardTpl">
-    <article class="card" data-state="queued">
-      <div class="card-head">
-        <button class="collapse" title="Recolher / expandir">▾</button>
-        <span class="num"></span>
-        <div class="file-info">
-          <span class="file-name"></span>
-          <span class="meta"></span>
+        <div class="queue-summary" id="summary" hidden>
+          <div class="summary-text" id="summaryText"></div>
+          <div class="meter"><div class="meter-fill" id="summaryBar"></div></div>
         </div>
-        <span class="badge status">Na fila</span>
-      </div>
-      <div class="card-body">
-        <audio controls preload="metadata"></audio>
-        <div class="progress"><div class="bar"></div></div>
-        <div class="text" contenteditable="true" spellcheck="true"></div>
-        <div class="card-actions">
-          <button class="btn copy" disabled>Copiar</button>
-          <button class="btn download" disabled>Baixar .txt</button>
-          <button class="btn retry" hidden>Refazer com precisão</button>
-          <span class="spacer"></span>
-          <button class="btn ghost danger remove">Remover</button>
-        </div>
-      </div>
-    </article>
-  </template>
 
-  <div id="toast" class="toast"></div>
+        <div class="queue" id="queue"></div>
+
+        <div class="queue-empty" id="queueEmpty">
+          <svg class="i"><use href="/static/vendor/icons.svg#i-inbox"/></svg>
+          <span id="queueEmptyText">Nenhum áudio ainda</span>
+        </div>
+
+        <footer class="sidebar-foot" id="footStats"></footer>
+
+        <!-- Ações para vários selecionados -->
+        <footer class="bulkbar" id="bulkbar" hidden>
+          <div class="bulk-top">
+            <span id="bulkCount"></span>
+            <button class="btn ghost sm" id="bulkClear">Limpar seleção</button>
+          </div>
+          <div class="bulk-actions">
+            <button class="btn primary sm" id="bulkAi"><svg class="i"><use href="/static/vendor/icons.svg#i-send"/></svg>Enviar juntos para IA</button>
+            <button class="btn secondary sm icon-only" id="bulkCopy" title="Copiar textos"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg></button>
+            <button class="btn secondary sm icon-only" id="bulkClient" title="Definir cliente"><svg class="i"><use href="/static/vendor/icons.svg#i-user"/></svg></button>
+            <button class="btn secondary sm icon-only" id="bulkResolve" title="Marcar como resolvidos"><svg class="i"><use href="/static/vendor/icons.svg#i-check-check"/></svg></button>
+            <button class="btn secondary sm icon-only" id="bulkDownload" title="Baixar .txt"><svg class="i"><use href="/static/vendor/icons.svg#i-download"/></svg></button>
+            <button class="btn secondary sm icon-only danger" id="bulkDelete" title="Excluir"><svg class="i"><use href="/static/vendor/icons.svg#i-trash-2"/></svg></button>
+          </div>
+        </footer>
+      </aside>
+
+      <!-- ============================== Detalhe -->
+      <main class="detail" id="detail">
+        <section class="empty" id="emptyState">
+          <label class="dropcard">
+            <input type="file" id="fileInput2" accept="audio/*,video/*,.ogg,.opus,.m4a,.mp3,.wav,.aac,.amr,.webm,.mp4" multiple hidden>
+            <span class="dropcard-icon"><svg class="i"><use href="/static/vendor/icons.svg#i-file-audio"/></svg></span>
+            <span class="dropcard-title">Solte os áudios aqui</span>
+            <span class="dropcard-sub">OGG, OPUS, MP3, M4A, WAV e vídeos. Vários de uma vez. Tudo fica salvo no seu histórico.</span>
+            <span class="btn secondary">Escolher arquivos</span>
+          </label>
+          <ul class="hints">
+            <li><kbd>Ctrl</kbd><kbd>V</kbd> cola áudios</li>
+            <li><kbd>/</kbd> busca</li>
+            <li><kbd>↑</kbd><kbd>↓</kbd> navega</li>
+            <li><kbd>Espaço</kbd> toca / pausa</li>
+            <li><kbd>I</kbd> envia para a IA</li>
+          </ul>
+        </section>
+
+        <section class="view" id="view" hidden>
+          <div class="view-head">
+            <input class="title-input" id="vTitle" maxlength="200" aria-label="Título" spellcheck="false">
+            <div class="view-actions">
+              <div class="split">
+                <button class="btn primary" id="vAi"><svg class="i"><use href="/static/vendor/icons.svg#i-send"/></svg><span>Enviar para IA</span></button>
+                <button class="btn primary icon-only" id="vAiMenu" title="Escolher prompt"><svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg></button>
+              </div>
+              <button class="btn secondary" id="vCopy"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg>Copiar</button>
+              <button class="btn secondary icon-only" id="vMore" title="Mais ações"><svg class="i"><use href="/static/vendor/icons.svg#i-ellipsis"/></svg></button>
+            </div>
+          </div>
+          <div class="view-meta" id="vMeta"></div>
+
+          <dl class="props">
+            <dt><svg class="i"><use href="/static/vendor/icons.svg#i-user"/></svg>Cliente</dt>
+            <dd><button class="prop-btn" id="vClient"></button></dd>
+            <dt><svg class="i"><use href="/static/vendor/icons.svg#i-circle-dot"/></svg>Situação</dt>
+            <dd><button class="prop-btn" id="vResolved"></button></dd>
+            <dt><svg class="i"><use href="/static/vendor/icons.svg#i-calendar"/></svg>Recebido</dt>
+            <dd><span class="prop-text" id="vDate"></span></dd>
+            <dt><svg class="i"><use href="/static/vendor/icons.svg#i-sticky-note"/></svg>Notas</dt>
+            <dd><textarea class="notes" id="vNotes" rows="1" placeholder="Adicionar uma nota…"></textarea></dd>
+          </dl>
+
+          <div class="player">
+            <button class="play" id="pPlay" aria-label="Tocar">
+              <svg class="i"><use href="/static/vendor/icons.svg#i-play"/></svg>
+            </button>
+            <div class="wave" id="pWave"><canvas></canvas></div>
+            <span class="time" id="pTime">0:00</span>
+            <button class="speed" id="pSpeed" title="Velocidade">1×</button>
+          </div>
+          <audio id="audio" preload="metadata"></audio>
+
+          <div class="transcript-bar">
+            <span class="section-label">Transcrição</span>
+            <span class="transcript-info" id="tInfo"></span>
+            <span class="save-state" id="saveState"></span>
+            <label class="switch">
+              <input type="checkbox" id="timestamps">
+              <span class="switch-track"></span>
+              Tempos
+            </label>
+          </div>
+
+          <div class="transcript" id="transcript"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- ============================== Configurações -->
+  <dialog class="modal" id="settingsModal">
+    <div class="modal-head">
+      <h2>Configurações</h2>
+      <button class="btn ghost icon-only" data-close title="Fechar"><svg class="i"><use href="/static/vendor/icons.svg#i-x"/></svg></button>
+    </div>
+    <div class="modal-tabs" id="settingsTabs">
+      <button class="tab active" data-pane="general">Geral</button>
+      <button class="tab" data-pane="templates">Prompts</button>
+      <button class="tab" data-pane="clients">Clientes</button>
+    </div>
+
+    <div class="modal-body">
+      <section class="pane" data-pane="general">
+        <div class="form-row">
+          <div>
+            <div class="form-label">Enviar para</div>
+            <div class="form-help">Onde o botão “Enviar para IA” abre o prompt. Ele sempre é copiado também.</div>
+          </div>
+          <div class="segmented" id="aiPicker">
+            <button type="button" data-ai="chatgpt">ChatGPT</button>
+            <button type="button" data-ai="claude">Claude</button>
+            <button type="button" data-ai="copy">Só copiar</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Prompt padrão</div>
+            <div class="form-help">Usado ao clicar em “Enviar para IA” ou apertar <kbd>I</kbd>.</div>
+          </div>
+          <div class="select">
+            <select id="defaultTemplate"></select>
+            <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Marcar como resolvido ao enviar</div>
+            <div class="form-help">Tira o áudio da aba “Pendentes” assim que você manda para a IA.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="resolveOnSend">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="templates" hidden>
+        <div class="pane-split">
+          <div class="pane-list">
+            <ul class="crud-list" id="templateList"></ul>
+            <button class="btn secondary sm block" id="newTemplate"><svg class="i"><use href="/static/vendor/icons.svg#i-plus"/></svg>Novo prompt</button>
+          </div>
+          <form class="pane-form" id="templateForm" autocomplete="off">
+            <label class="form-field">
+              <span class="form-label">Nome</span>
+              <input class="input" name="name" required maxlength="120" placeholder="Ex.: Resumir e sugerir resposta">
+            </label>
+            <label class="form-field grow">
+              <span class="form-label">Texto do prompt</span>
+              <textarea class="input" name="body" required rows="10" placeholder="Escreva o que a IA deve fazer…"></textarea>
+            </label>
+            <div class="form-help vars">
+              Variáveis:
+              <button type="button" class="var" data-var="{texto}">{texto}</button>
+              <button type="button" class="var" data-var="{cliente}">{cliente}</button>
+              <button type="button" class="var" data-var="{data}">{data}</button>
+              <button type="button" class="var" data-var="{titulo}">{titulo}</button>
+              <button type="button" class="var" data-var="{notas}">{notas}</button>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn ghost danger sm" id="deleteTemplate"><svg class="i"><use href="/static/vendor/icons.svg#i-trash-2"/></svg>Excluir</button>
+              <span class="spacer"></span>
+              <button type="submit" class="btn primary sm">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="clients" hidden>
+        <div class="pane-split">
+          <div class="pane-list">
+            <ul class="crud-list" id="clientList"></ul>
+            <button class="btn secondary sm block" id="newClient"><svg class="i"><use href="/static/vendor/icons.svg#i-user-plus"/></svg>Novo cliente</button>
+          </div>
+          <form class="pane-form" id="clientForm" autocomplete="off">
+            <label class="form-field">
+              <span class="form-label">Nome</span>
+              <input class="input" name="name" required maxlength="120" placeholder="Nome do cliente">
+            </label>
+            <label class="form-field">
+              <span class="form-label">Telefone / WhatsApp</span>
+              <input class="input" name="phone" placeholder="(11) 99999-0000">
+            </label>
+            <label class="form-field grow">
+              <span class="form-label">Observações</span>
+              <textarea class="input" name="notes" rows="5" placeholder="Informações úteis sobre este cliente"></textarea>
+            </label>
+            <div class="form-help" id="clientUsage"></div>
+            <div class="form-actions">
+              <button type="button" class="btn ghost danger sm" id="deleteClient"><svg class="i"><use href="/static/vendor/icons.svg#i-trash-2"/></svg>Excluir</button>
+              <span class="spacer"></span>
+              <button type="submit" class="btn primary sm">Salvar</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
+  </dialog>
+
+  <!-- ============================== Confirmação -->
+  <dialog class="modal confirm" id="confirmModal">
+    <div class="confirm-body">
+      <span class="confirm-icon"><svg class="i"><use href="/static/vendor/icons.svg#i-trash-2"/></svg></span>
+      <div>
+        <h2 id="confirmTitle"></h2>
+        <p id="confirmText"></p>
+      </div>
+    </div>
+    <div class="form-actions">
+      <span class="spacer"></span>
+      <button class="btn secondary sm" data-close>Cancelar</button>
+      <button class="btn danger-solid sm" id="confirmOk">Excluir</button>
+    </div>
+  </dialog>
+
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-overlay-inner">
+      <svg class="i"><use href="/static/vendor/icons.svg#i-upload"/></svg>
+      Solte para transcrever
+    </div>
+  </div>
+
+  <div class="menu" id="menu" hidden></div>
+
+  <div class="toast" id="toast"><svg class="i"><use href="/static/vendor/icons.svg#i-check"/></svg><span></span></div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
