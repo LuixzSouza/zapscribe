@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Áudio para Texto</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div class="logo">🎙️</div>
+      <div>
+        <h1>Áudio para Texto</h1>
+        <p class="subtitle">Converta áudios do WhatsApp (e outros) em texto. Tudo roda no seu computador, nada sai dele.</p>
+      </div>
+    </header>
+
+    <section class="options">
+      <label>
+        Qualidade
+        <select id="model"></select>
+      </label>
+      <label>
+        Idioma
+        <select id="language">
+          <option value="pt" selected>Português</option>
+          <option value="auto">Detectar automaticamente</option>
+          <option value="en">Inglês</option>
+          <option value="es">Espanhol</option>
+        </select>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="timestamps"> Mostrar tempos
+      </label>
+    </section>
+
+    <label id="dropzone" class="dropzone">
+      <input type="file" id="fileInput" accept="audio/*,video/*,.ogg,.opus,.m4a,.mp3,.wav,.aac,.amr,.webm,.mp4" multiple hidden>
+      <div class="drop-icon">⬆️</div>
+      <strong>Arraste os áudios aqui</strong>
+      <span>ou clique para escolher. Pode mandar vários de uma vez, e também colar com Ctrl+V.</span>
+    </label>
+
+    <section id="toolbar" class="toolbar" hidden>
+      <div class="summary">
+        <div class="counts" id="counts"></div>
+        <div class="progress overall"><div class="bar" id="overallBar"></div></div>
+      </div>
+      <div class="toolbar-row">
+        <div class="tabs" id="tabs">
+          <button class="tab active" data-filter="all">Todos <span></span></button>
+          <button class="tab" data-filter="active">Em andamento <span></span></button>
+          <button class="tab" data-filter="done">Concluídos <span></span></button>
+          <button class="tab" data-filter="error">Erros <span></span></button>
+        </div>
+        <div class="actions">
+          <button class="btn" id="copyAll">Copiar tudo</button>
+          <button class="btn" id="downloadAll">Baixar tudo</button>
+          <button class="btn ghost" id="clearDone">Limpar concluídos</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="results"></section>
+    <p id="emptyFilter" class="empty" hidden>Nenhum áudio nesta aba.</p>
+  </main>
+
+  <template id="cardTpl">
+    <article class="card" data-state="queued">
+      <div class="card-head">
+        <button class="collapse" title="Recolher / expandir">▾</button>
+        <span class="num"></span>
+        <div class="file-info">
+          <span class="file-name"></span>
+          <span class="meta"></span>
+        </div>
+        <span class="badge status">Na fila</span>
+      </div>
+      <div class="card-body">
+        <audio controls preload="metadata"></audio>
+        <div class="progress"><div class="bar"></div></div>
+        <div class="text" contenteditable="true" spellcheck="true"></div>
+        <div class="card-actions">
+          <button class="btn copy" disabled>Copiar</button>
+          <button class="btn download" disabled>Baixar .txt</button>
+          <button class="btn retry" hidden>Refazer com precisão</button>
+          <span class="spacer"></span>
+          <button class="btn ghost danger remove">Remover</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

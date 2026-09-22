@@ -1,0 +1,15 @@
+[project]
+name = "zapscribe"
+version = "0.1.0"
+description = "Conversor local de áudio (WhatsApp etc.) para texto com faster-whisper"
+readme = "README.md"
+authors = [
+    { name = "LuixzSouza", email = "luiz.antoniodesouza004@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "faster-whisper>=1.2.1",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.53.0",
+]
