@@ -1,5 +1,5 @@
 @echo off
+rem Abre o Zapscribe sem janela de terminal: ele fica como um ícone ao lado do relógio.
+rem Para ver os registros no terminal, rode: uv run main.py
 cd /d "%~dp0"
-echo Iniciando Audio para Texto em http://127.0.0.1:8000 ...
-start "" http://127.0.0.1:8000
-uv run main.py
+start "" uv run pythonw tray.py

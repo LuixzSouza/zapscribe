@@ -168,6 +168,15 @@
           </div>
 
           <div class="transcript" id="transcript"></div>
+
+          <div class="ai-saved" id="aiSaved" hidden>
+            <div class="transcript-bar">
+              <span class="section-label">Resposta da IA local</span>
+              <span class="transcript-info" id="aiSavedInfo"></span>
+              <button class="btn ghost sm" id="aiSavedCopy"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg>Copiar</button>
+            </div>
+            <div class="ai-text" id="aiSavedText"></div>
+          </div>
         </section>
       </main>
     </div>
@@ -195,7 +204,21 @@
           <div class="segmented" id="aiPicker">
             <button type="button" data-ai="chatgpt">ChatGPT</button>
             <button type="button" data-ai="claude">Claude</button>
+            <button type="button" data-ai="local">IA local</button>
             <button type="button" data-ai="copy">Só copiar</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Modelo da IA local</div>
+            <div class="form-help" id="localAiHelp">Verificando o Ollama…</div>
+          </div>
+          <div class="local-ai-controls">
+            <div class="select" id="localModelWrap" hidden>
+              <select id="localModel"></select>
+              <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+            </div>
+            <button type="button" class="btn secondary sm" id="pullModel" hidden><svg class="i"><use href="/static/vendor/icons.svg#i-download"/></svg><span></span></button>
           </div>
         </div>
         <div class="form-row">
@@ -217,6 +240,32 @@
             <input type="checkbox" id="resolveOnSend">
             <span class="switch-track"></span>
           </label>
+        </div>
+        <label class="form-field form-stack">
+          <span class="form-label">Vocabulário</span>
+          <span class="form-help">Nomes, marcas e termos que aparecem nos seus áudios, separados por vírgula. Ajuda a transcrição a escrevê-los certo. Cada cliente também pode ter o seu.</span>
+          <textarea class="input" id="vocabulary" rows="3" placeholder="Ex.: Zapscribe, porcelanato, Dra. Thaynara, drywall"></textarea>
+        </label>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Importar áudios do WhatsApp automaticamente</div>
+            <div class="form-help">Quando você salvar um áudio do WhatsApp na pasta abaixo, ele entra na fila sozinho. Só vale para os salvos depois de ligar.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="watchEnabled">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <label class="form-field form-stack watch-folder">
+          <span class="form-label">Pasta</span>
+          <input class="input" id="watchFolder" spellcheck="false">
+        </label>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Backup</div>
+            <div class="form-help">Banco e áudios num arquivo .zip. Para restaurar, descompacte na pasta <code>data/</code> do Zapscribe.</div>
+          </div>
+          <a class="btn secondary sm" id="backup" href="/api/backup" download><svg class="i"><use href="/static/vendor/icons.svg#i-download"/></svg>Baixar backup</a>
         </div>
       </section>
 
@@ -271,6 +320,10 @@
               <span class="form-label">Observações</span>
               <textarea class="input" name="notes" rows="5" placeholder="Informações úteis sobre este cliente"></textarea>
             </label>
+            <label class="form-field">
+              <span class="form-label">Vocabulário</span>
+              <input class="input" name="vocabulary" placeholder="Nomes e termos que este cliente usa, separados por vírgula">
+            </label>
             <div class="form-help" id="clientUsage"></div>
             <div class="form-actions">
               <button type="button" class="btn ghost danger sm" id="deleteClient"><svg class="i"><use href="/static/vendor/icons.svg#i-trash-2"/></svg>Excluir</button>
@@ -280,6 +333,22 @@
           </form>
         </div>
       </section>
+    </div>
+  </dialog>
+
+  <!-- ============================== Resposta da IA local -->
+  <dialog class="modal ai-modal" id="aiModal">
+    <div class="modal-head">
+      <h2><span class="ai-badge"><svg class="i"><use href="/static/vendor/icons.svg#i-sparkles"/></svg></span><span id="aiTitle"></span></h2>
+      <button class="btn ghost icon-only" data-close title="Fechar"><svg class="i"><use href="/static/vendor/icons.svg#i-x"/></svg></button>
+    </div>
+    <div class="ai-text ai-output" id="aiOutput"></div>
+    <div class="form-actions ai-actions">
+      <span class="ai-state" id="aiState"></span>
+      <span class="spacer"></span>
+      <button class="btn secondary sm" id="aiStop"><svg class="i"><use href="/static/vendor/icons.svg#i-square"/></svg>Parar</button>
+      <button class="btn secondary sm" id="aiRetry"><svg class="i"><use href="/static/vendor/icons.svg#i-rotate-ccw"/></svg>Gerar de novo</button>
+      <button class="btn primary sm" id="aiCopy"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg>Copiar resposta</button>
     </div>
   </dialog>
 

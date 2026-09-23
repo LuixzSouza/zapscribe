@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import anyio
+import av
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 from faster_whisper.utils import download_model
 
@@ -31,6 +32,25 @@ PRECISE_MODEL = "large-v3-turbo"
 PARALLEL = 3
 CPU_THREADS = max(1, (os.cpu_count() or 4) // PARALLEL)
 
+# Durante a transcrição, o texto parcial é gravado no banco no máximo a cada N segundos
+# (a interface recebe cada trecho na hora pelos eventos)
+SAVE_INTERVAL = 2.0
+
+
+def _detect_device() -> str:
+    """Usa a placa de vídeo NVIDIA quando houver; ZAPSCRIBE_DEVICE=cpu|cuda força uma opção."""
+    forced = os.environ.get("ZAPSCRIBE_DEVICE", "").lower()
+    if forced in ("cpu", "cuda"):
+        return forced
+    try:
+        import ctranslate2
+
+        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+    except Exception:
+        return "cpu"
+
+
+device = _detect_device()
 _models: dict[str, WhisperModel] = {}
 _models_lock = threading.Lock()
 
@@ -40,14 +60,34 @@ def get_model(name: str) -> WhisperModel:
         if name not in _models:
             # Baixa para uma pasta local (sem symlinks, que falham no Windows sem admin)
             path = download_model(name, output_dir=str(MODELS_DIR / name))
-            _models[name] = WhisperModel(
-                path,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=CPU_THREADS,
-                num_workers=PARALLEL,
-            )
+            if device == "cuda":
+                _models[name] = WhisperModel(path, device="cuda", compute_type="float16", num_workers=PARALLEL)
+            else:
+                _models[name] = WhisperModel(
+                    path,
+                    device="cpu",
+                    compute_type="int8",
+                    cpu_threads=CPU_THREADS,
+                    num_workers=PARALLEL,
+                )
         return _models[name]
+
+
+def fall_back_to_cpu() -> None:
+    """A GPU foi detectada mas não funcionou (ex.: faltam as bibliotecas CUDA): segue na CPU."""
+    global device
+    with _models_lock:
+        device = "cpu"
+        _models.clear()
+
+
+def vocabulary_for(item: dict) -> str | None:
+    """Vocabulário geral + o do cliente, para o Whisper reconhecer nomes e termos."""
+    parts = [db.get_settings().get("vocabulary") or ""]
+    if item.get("client_id") and (client := db.get_client(item["client_id"])):
+        parts.append(client.get("vocabulary") or "")
+    words = [w.strip() for part in parts for w in part.replace("\n", ",").split(",") if w.strip()]
+    return ", ".join(dict.fromkeys(words)) or None
 
 
 def auto_title(text: str, limit: int = 60) -> str:
@@ -152,12 +192,14 @@ class Transcriber:
             pipeline = BatchedInferencePipeline(whisper)
             path = str(db.AUDIO_DIR / item["file_name"])
             language = None if item["language"] == "auto" else item["language"]
+            hotwords = vocabulary_for(item)
             segments, info = await anyio.to_thread.run_sync(
-                lambda: pipeline.transcribe(path, language=language, batch_size=8, beam_size=1)
+                lambda: pipeline.transcribe(path, language=language, batch_size=8, beam_size=1, hotwords=hotwords)
             )
             db.update_transcription(id_, duration=info.duration, detected_language=info.language)
             self.publish_item(id_)
 
+            last_save = time.monotonic()
             while True:
                 seg = await anyio.to_thread.run_sync(next, segments, None)
                 if seg is None:
@@ -167,7 +209,9 @@ class Transcriber:
                 segment = {"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()}
                 segments_out.append(segment)
                 progress = min(1.0, seg.end / info.duration) if info.duration else 0
-                db.update_transcription(id_, segments=segments_out, progress=progress)
+                if time.monotonic() - last_save >= SAVE_INTERVAL:
+                    db.update_transcription(id_, segments=segments_out, progress=progress)
+                    last_save = time.monotonic()
                 self.publish({
                     "type": "segment",
                     "id": id_,
@@ -184,7 +228,19 @@ class Transcriber:
                 fields["title"] = auto_title(text)
             db.update_transcription(id_, **fields)
         except Exception as e:
+            if id_ in self.cancelled:
+                return  # excluído durante a transcrição: o arquivo já foi apagado
+            if device == "cuda" and not isinstance(e, av.error.FFmpegError):
+                log.warning("Falha na GPU (%s). Continuando na CPU.", e)
+                fall_back_to_cpu()
+                db.update_transcription(id_, status="queued", progress=0)
+                self.queue.put_nowait(id_)
+                self.publish_item(id_)
+                return
             log.exception("Erro ao transcrever %s", id_)
-            db.update_transcription(id_, status="error", error=str(e), elapsed=time.perf_counter() - started)
+            error = str(e)
+            if isinstance(e, av.error.FFmpegError):
+                error = "Não foi possível ler este arquivo. Ele pode estar corrompido ou não ser um áudio."
+            db.update_transcription(id_, status="error", error=error, elapsed=time.perf_counter() - started)
 
         self.publish_item(id_)

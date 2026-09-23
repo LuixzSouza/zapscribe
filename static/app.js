@@ -23,6 +23,8 @@ async function api(method, path, body) {
   else if (body !== undefined) {
     opts.body = JSON.stringify(body);
     opts.headers["content-type"] = "application/json";
+    // Deixa o salvamento terminar mesmo se a aba for fechada (o navegador limita a 64 KB)
+    opts.keepalive = opts.body.length < 60000;
   }
   const res = await fetch(`/api${path}`, opts);
   if (!res.ok) {
@@ -37,14 +39,22 @@ async function api(method, path, body) {
 }
 
 function debounce(fn, ms) {
-  let t;
+  let t = null;
+  let lastArgs;
   const wrapped = (...args) => {
     clearTimeout(t);
-    t = setTimeout(() => fn(...args), ms);
+    lastArgs = args;
+    t = setTimeout(() => {
+      t = null;
+      fn(...args);
+    }, ms);
   };
-  wrapped.flush = (...args) => {
+  // Executa agora o que estava agendado (se houver)
+  wrapped.flush = () => {
+    if (t === null) return;
     clearTimeout(t);
-    fn(...args);
+    t = null;
+    fn(...lastArgs);
   };
   return wrapped;
 }
@@ -58,6 +68,7 @@ const LANGS = { pt: "Português", en: "Inglês", es: "Espanhol" };
 const AI_TARGETS = {
   chatgpt: { label: "ChatGPT", url: "https://chatgpt.com/?q=" },
   claude: { label: "Claude", url: "https://claude.ai/new?q=" },
+  local: { label: "IA local", url: null, local: true },
   copy: { label: "Só copiar", url: null },
 };
 const STATUS_ICON = { queued: "clock", running: "loader-circle", done: "check", error: "circle-alert" };
@@ -65,7 +76,7 @@ const AVATAR_COLORS = ["#0f766e", "#1d4ed8", "#7c3aed", "#be185d", "#b45309", "#
 
 const state = {
   config: { models: {}, default: "small", precise: "large-v3-turbo", parallel: 3 },
-  settings: { ai: "chatgpt", template_id: null, resolve_on_send: false },
+  settings: { ai: "chatgpt", template_id: null, resolve_on_send: false, vocabulary: "", local_model: "" },
   items: new Map(),
   clients: [],
   templates: [],
@@ -214,6 +225,7 @@ function upsert(item, { silent = false } = {}) {
   const merged = { ...prev, ...item };
   const statusChanged = !prev || prev.status !== item.status;
 
+  if (prev && statusChanged && (item.status === "done" || item.status === "error")) notifyFinished(merged);
   if (item.status === "running" && statusChanged) merged.segments = [];
   if (item.status === "queued" || item.id !== state.selectedId) delete merged.segments;
   state.items.set(item.id, merged);
@@ -232,6 +244,39 @@ function upsert(item, { silent = false } = {}) {
       if (statusChanged) renderTranscript(merged);
     }
   }
+}
+
+// Aviso do Windows quando uma transcrição termina com a aba em segundo plano
+const finishedWhileAway = [];
+const showFinishedNotice = debounce(() => {
+  const list = finishedWhileAway.splice(0);
+  if (!list.length || !("Notification" in window) || Notification.permission !== "granted") return;
+  const failed = list.filter((i) => i.status === "error").length;
+  const done = list.length - failed;
+  const body = list.length === 1
+    ? failed ? `Não foi possível transcrever “${list[0].title}”` : list[0].title
+    : [done && `${done} ${done === 1 ? "áudio transcrito" : "áudios transcritos"}`, failed && `${failed} com erro`]
+        .filter(Boolean).join(" · ");
+  const note = new Notification(list.length === 1 && !failed ? "Transcrição pronta" : "Zapscribe", {
+    body,
+    icon: "/static/favicon.svg",
+    tag: "zapscribe",
+  });
+  note.onclick = () => {
+    window.focus();
+    select(list[0].id);
+    note.close();
+  };
+}, 1500);
+
+function notifyFinished(item) {
+  if (!document.hidden) return;
+  finishedWhileAway.push(item);
+  showFinishedNotice();
+}
+
+function askNotificationPermission() {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
 }
 
 function onSegment({ id, index, segment, progress }) {
@@ -308,6 +353,7 @@ document.addEventListener("paste", (e) => {
 async function addFiles(files) {
   const list = [...files].filter((f) => /^(audio|video)\//.test(f.type) || AUDIO_EXT.test(f.name));
   if (!list.length) return toast("Nenhum arquivo de áudio encontrado", true);
+  askNotificationPermission();
 
   // Se estiver filtrando por um cliente, os áudios novos já entram nele
   const clientId = /^\d+$/.test(state.clientFilter) ? Number(state.clientFilter) : null;
@@ -315,6 +361,7 @@ async function addFiles(files) {
 
   let firstId = null;
   let failed = 0;
+  let duplicates = 0;
   const pending = [...list];
   const worker = async () => {
     while (pending.length) {
@@ -326,7 +373,8 @@ async function addFiles(files) {
       form.append("last_modified", String(file.lastModified || ""));
       if (clientId) form.append("client_id", String(clientId));
       try {
-        const item = await api("POST", "/transcriptions", form);
+        const { duplicate, ...item } = await api("POST", "/transcriptions", form);
+        if (duplicate) duplicates++;
         upsert(item);
         firstId ??= item.id;
       } catch {
@@ -336,21 +384,37 @@ async function addFiles(files) {
   };
   await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker));
 
-  if (firstId && !state.selectedId) select(firstId);
-  const ok = list.length - failed;
+  const ok = list.length - failed - duplicates;
+  if (firstId && (!state.selectedId || (duplicates && !ok))) select(firstId);
   if (failed) toast(`${failed} arquivo(s) não puderam ser enviados`, true);
+  else if (duplicates && !ok) toast(duplicates > 1 ? `Esses ${duplicates} áudios já estavam na lista` : "Esse áudio já estava na lista");
+  else if (duplicates) toast(`${ok} ${ok > 1 ? "áudios adicionados" : "áudio adicionado"} · ${duplicates} já estava(m) na lista`);
   else toast(ok > 1 ? `${ok} áudios adicionados à fila` : "Áudio adicionado à fila");
 }
 
 // =====================================================================
 // Lista: filtros, busca, grupos por dia
 // =====================================================================
+// Texto de busca (sem acentos) de cada áudio, calculado uma vez. Cada mudança num áudio cria um
+// objeto novo (upsert/patch), o que invalida a entrada sozinho; nomes de clientes limpam tudo.
+let searchCache = new WeakMap();
+let queryTerms = [];
+
+function haystack(it) {
+  let hay = searchCache.get(it);
+  if (hay === undefined) {
+    hay = normalize([it.title, it.text, it.notes, it.original_name, clientById(it.client_id)?.name].join(" "));
+    searchCache.set(it, hay);
+  }
+  return hay;
+}
+
 function matchesClientAndSearch(it) {
   if (state.clientFilter === "none" && it.client_id) return false;
   if (/^\d+$/.test(state.clientFilter) && it.client_id !== Number(state.clientFilter)) return false;
-  if (state.query) {
-    const hay = normalize([it.title, it.text, it.notes, it.original_name, clientById(it.client_id)?.name].join(" "));
-    return normalize(state.query).split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+  if (queryTerms.length) {
+    const hay = haystack(it);
+    return queryTerms.every((t) => hay.includes(t));
   }
   return true;
 }
@@ -384,22 +448,27 @@ function dayLabel(ms) {
   });
 }
 
+// A lista mostra LIST_PAGE linhas e desenha mais conforme a rolagem chega perto do fim:
+// com milhares de áudios, desenhar tudo de uma vez travaria a página.
+const LIST_PAGE = 150;
+let listShown = LIST_PAGE;
+let listItems = [];
+let listLastLabel = null;
+const listMore = document.createElement("div");
+listMore.className = "list-more";
+new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && showMoreRows(), {
+  root: el.queue,
+  rootMargin: "600px",
+}).observe(listMore);
+
 function renderList() {
-  const list = visibleItems();
-  const frag = document.createDocumentFragment();
-  let lastLabel = null;
-  for (const it of list) {
-    const label = dayLabel(itemDate(it));
-    if (label !== lastLabel) {
-      const g = document.createElement("div");
-      g.className = "group-label";
-      g.textContent = label;
-      frag.append(g);
-      lastLabel = label;
-    }
-    frag.append(renderRow(it));
-  }
-  el.queue.replaceChildren(frag);
+  const list = (listItems = visibleItems());
+  // O áudio selecionado sempre fica desenhado
+  const selected = list.findIndex((it) => it.id === state.selectedId);
+  listShown = Math.max(listShown, selected + 1);
+  el.queue.replaceChildren();
+  listLastLabel = null;
+  appendRows(0, listShown);
 
   el.queueEmpty.hidden = list.length > 0;
   el.queueEmptyText.textContent = !state.items.size
@@ -408,9 +477,43 @@ function renderList() {
   renderCounts();
 }
 
-function renderRow(it) {
+function appendRows(from, to) {
+  const frag = document.createDocumentFragment();
+  for (const it of listItems.slice(from, to)) {
+    const label = dayLabel(itemDate(it));
+    if (label !== listLastLabel) {
+      const g = document.createElement("div");
+      g.className = "group-label";
+      g.textContent = label;
+      frag.append(g);
+      listLastLabel = label;
+    }
+    frag.append(renderRow(it, true));
+  }
+  listMore.remove();
+  if (to < listItems.length) frag.append(listMore);
+  el.queue.append(frag);
+}
+
+function showMoreRows() {
+  if (listShown >= listItems.length) return;
+  const from = listShown;
+  listShown += LIST_PAGE;
+  appendRows(from, listShown);
+}
+
+// Volta ao começo da lista (ao trocar filtro, aba ou busca)
+function resetListWindow() {
+  listShown = LIST_PAGE;
+  el.queue.scrollTop = 0;
+}
+
+// Atualiza a linha de um áudio. Só cria a linha quando ela vai ser desenhada (create);
+// áudios fora da parte visível da lista não gastam nada.
+function renderRow(it, create = false) {
   let row = rows.get(it.id);
   if (!row) {
+    if (!create) return null;
     row = document.createElement("div");
     row.className = "item";
     row.dataset.id = it.id;
@@ -478,7 +581,7 @@ function renderFooter() {
   const all = [...state.items.values()];
   const minutes = Math.round(all.reduce((s, i) => s + (i.status === "done" ? i.duration : 0), 0) / 60);
   el.footStats.innerHTML = all.length
-    ? `${icon("shield-check")}<span>${all.length} ${all.length === 1 ? "áudio" : "áudios"}</span><span class="sep">·</span><span>${minutes} min transcritos</span><span class="sep">·</span><span>100% local</span>`
+    ? `${icon("shield-check")}<span>${all.length} ${all.length === 1 ? "áudio" : "áudios"}</span><span class="sep">·</span><span>${minutes} min transcritos</span><span class="sep">·</span><span>100% local${state.config.device === "cuda" ? " · GPU" : ""}</span>`
     : `${icon("shield-check")}<span>Tudo é processado e salvo neste computador</span>`;
 }
 
@@ -493,6 +596,7 @@ function renderClientFilter() {
 
 function setFilter(filter) {
   state.filter = filter;
+  resetListWindow();
   $$("#tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.filter === filter));
   renderList();
 }
@@ -500,10 +604,13 @@ function setFilter(filter) {
 $$("#tabs .tab").forEach((tab) => (tab.onclick = () => setFilter(tab.dataset.filter)));
 el.clientFilter.addEventListener("change", () => {
   state.clientFilter = el.clientFilter.value;
+  resetListWindow();
   renderList();
 });
 el.search.addEventListener("input", debounce(() => {
   state.query = el.search.value.trim();
+  queryTerms = normalize(state.query).split(/\s+/).filter(Boolean);
+  resetListWindow();
   renderList();
   const it = selected();
   if (it) renderTranscript(it);
@@ -579,9 +686,9 @@ function renderSelection() {
 async function select(id) {
   if (!state.items.has(id)) return;
   const prevId = state.selectedId;
+  if (prevId !== id) flushEdits();
   state.selectedId = id;
   if (prevId && prevId !== id) {
-    flushEdits();
     const prev = state.items.get(prevId);
     if (prev) {
       delete prev.segments;
@@ -589,6 +696,7 @@ async function select(id) {
     }
   }
   const it = state.items.get(id);
+  if (!rows.get(id)?.isConnected) renderList();
   renderRow(it);
   rows.get(id)?.scrollIntoView({ block: "nearest" });
 
@@ -614,6 +722,7 @@ async function loadDetail(id) {
     renderRow(it);
     renderHead(it);
     renderTranscript(it);
+    renderAiSaved(it);
   } catch {
     /* removido enquanto carregava */
   }
@@ -626,6 +735,7 @@ function renderView() {
   if (!it) return;
   renderHead(it);
   renderTranscript(it);
+  renderAiSaved(it);
   updateTime();
 }
 
@@ -713,6 +823,8 @@ function appendSegment(it, index) {
     s.text = text.textContent;
     saveSegments(it.id);
   };
+  text.onfocus = () => (text.dataset.before = s.text);
+  text.onblur = () => suggestVocabulary(it, text.dataset.before ?? s.text, s.text);
 
   seg.append(ts, text, " ");
   t.append(seg);
@@ -733,11 +845,63 @@ function renderTranscriptInfo(it) {
   el.tInfo.textContent = info.join(" · ");
 }
 
+// Palavras novas digitadas numa correção viram sugestão para o vocabulário
+function suggestVocabulary(it, before, after) {
+  const words = (t) => String(t || "").match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || [];
+  const client = clientById(it.client_id);
+  const known = new Set(words(`${before} ${state.settings.vocabulary} ${client?.vocabulary || ""}`).map(normalize));
+  const added = [...new Set(words(after))].filter((w) => w.length >= 3 && !known.has(normalize(w))).slice(0, 3);
+  if (!added.length) return;
+  toast(`Adicionar ${added.map((w) => `“${w}”`).join(", ")} ao vocabulário${client ? ` de ${client.name}` : ""}?`, false, {
+    label: "Adicionar",
+    onClick: () => addToVocabulary(added, client),
+  });
+}
+
+async function addToVocabulary(words, client) {
+  const join = (current) => [current, ...words].map((w) => (w || "").trim()).filter(Boolean).join(", ");
+  try {
+    if (client) {
+      await api("PATCH", `/clients/${client.id}`, { vocabulary: join(client.vocabulary) });
+      await reloadClients();
+    } else {
+      await saveSettings({ vocabulary: join(state.settings.vocabulary) });
+    }
+    toast("Vocabulário atualizado para as próximas transcrições");
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// Destaca os termos da busca ignorando acentos, como a própria busca faz
 function highlight(text, query) {
-  const safe = esc(text);
-  const terms = query.split(/\s+/).filter((t) => t.length > 1).map((t) => esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (!terms.length) return safe;
-  return safe.replace(new RegExp(`(${terms.join("|")})`, "gi"), "<mark>$1</mark>");
+  const terms = normalize(query).split(/\s+/).filter((t) => t.length > 1);
+  if (!terms.length) return esc(text);
+
+  // Texto sem acentos, guardando de qual caractere do original veio cada posição
+  let plain = "";
+  const origin = [];
+  for (let i = 0; i < text.length; i++) {
+    const n = normalize(text[i]);
+    plain += n;
+    for (let k = 0; k < n.length; k++) origin.push(i);
+  }
+  const marked = new Array(text.length).fill(false);
+  for (const term of terms) {
+    for (let at = plain.indexOf(term); at !== -1; at = plain.indexOf(term, at + 1)) {
+      for (let k = at; k < at + term.length; k++) marked[origin[k]] = true;
+    }
+  }
+
+  let html = "";
+  for (let i = 0; i < text.length; ) {
+    let j = i;
+    while (j < text.length && marked[j] === marked[i]) j++;
+    const part = esc(text.slice(i, j));
+    html += marked[i] ? `<mark>${part}</mark>` : part;
+    i = j;
+  }
+  return html;
 }
 
 // ------------------------------------------------------------ edição
@@ -772,12 +936,13 @@ const saveSegments = debounce((id) => {
 
 const saveNotes = debounce((id, notes) => patch(id, { notes }), 600);
 
+// Salva na hora as edições pendentes do áudio selecionado (antes de trocar de áudio ou fechar a aba)
 function flushEdits() {
-  const it = selected();
-  if (!it) return;
-  if (document.activeElement === el.notes && el.notes.value !== (it.notes || "")) saveNotes.flush(it.id, el.notes.value);
   if (document.activeElement === el.title) el.title.blur();
+  saveNotes.flush();
+  saveSegments.flush();
 }
+window.addEventListener("pagehide", flushEdits);
 
 el.title.addEventListener("keydown", (e) => {
   if (e.key === "Enter") el.title.blur();
@@ -840,6 +1005,7 @@ function pickClient(anchor, currentId, onPick) {
 
 async function reloadClients() {
   state.clients = await api("GET", "/clients");
+  searchCache = new WeakMap();
   renderClientFilter();
   renderList();
   if (selected()) renderHead(selected());
@@ -966,7 +1132,10 @@ async function bulk(ids, action, clientId = null) {
       const it = state.items.get(id);
       if (!it) return;
       if (action === "resolve" || action === "unresolve") it.resolved = action === "resolve";
-      if (action === "set_client") it.client_id = clientId;
+      if (action === "set_client") {
+        it.client_id = clientId;
+        searchCache.delete(it);
+      }
     });
     if (action === "set_client") await reloadClients();
     else renderList();
@@ -995,7 +1164,7 @@ function openAiMenu(anchor, list) {
       { type: "header", label: "Abrir em" },
       ...Object.entries(AI_TARGETS).map(([key, target]) => ({
         label: target.label,
-        icon: key === "copy" ? "copy" : "external-link",
+        icon: { copy: "copy", local: "sparkles" }[key] || "external-link",
         tick: state.settings.ai === key,
         keepOpen: true,
         onClick: async () => {
@@ -1031,6 +1200,11 @@ function buildPrompt(template, list) {
 async function sendToAI(list, template) {
   const prompt = buildPrompt(template, list);
   const target = AI_TARGETS[state.settings.ai] || AI_TARGETS.copy;
+  if (target.local) {
+    runLocalAI(list, prompt);
+    resolveAfterSend(list);
+    return;
+  }
   // Copia antes de abrir a aba: o navegador só permite copiar com a página em foco
   const copied = await copyText(prompt);
   if (!copied) return;
@@ -1045,12 +1219,97 @@ async function sendToAI(list, template) {
   } else {
     toast("Prompt copiado. É só colar na IA");
   }
+  resolveAfterSend(list);
+}
 
-  if (state.settings.resolve_on_send) {
-    const ids = list.filter((i) => !i.resolved).map((i) => i.id);
-    if (ids.length) bulk(ids, "resolve");
+function resolveAfterSend(list) {
+  if (!state.settings.resolve_on_send) return;
+  const ids = list.filter((i) => !i.resolved).map((i) => i.id);
+  if (ids.length) bulk(ids, "resolve");
+}
+
+// ------------------------------------------------------------ IA local (Ollama)
+
+const aiModal = $("#aiModal");
+let aiAbort = null;
+
+async function runLocalAI(list, prompt) {
+  const single = list.length === 1 ? list[0] : null;
+  const out = $("#aiOutput");
+  $("#aiTitle").textContent = single ? single.title : `${list.length} áudios`;
+  out.textContent = "";
+  setAiState("loading");
+  $("#aiRetry").onclick = () => runLocalAI(list, prompt);
+  if (!aiModal.open) aiModal.showModal();
+
+  aiAbort?.abort();
+  const ctrl = (aiAbort = new AbortController());
+  let text = "";
+  try {
+    const res = await fetch("/api/ai/local/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, id: single?.id ?? null }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Erro ${res.status}`);
+    const model = res.headers.get("x-model");
+    setAiState("writing", model);
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += value;
+      const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+      out.textContent = text;
+      if (atBottom) out.scrollTop = out.scrollHeight;
+    }
+    setAiState("done", model);
+    const it = single && state.items.get(single.id);
+    if (it) {
+      it.ai_result = text.trim();
+      it.ai_model = model;
+      if (state.selectedId === it.id) renderAiSaved(it);
+    }
+  } catch (err) {
+    setAiState(err.name === "AbortError" ? "stopped" : "error", err.message);
+  } finally {
+    if (aiAbort === ctrl) aiAbort = null;
   }
 }
+
+function setAiState(stage, info = "") {
+  const busy = stage === "loading" || stage === "writing";
+  const label = {
+    loading: "Carregando o modelo… (na primeira vez pode levar um minuto)",
+    writing: `Escrevendo com ${info}…`,
+    done: `Pronto · ${info}`,
+    stopped: "Interrompido",
+    error: info,
+  }[stage];
+  const node = $("#aiState");
+  node.textContent = label;
+  node.className = `ai-state${busy ? " busy" : ""}${stage === "error" ? " error" : ""}`;
+  $("#aiStop").hidden = !busy;
+  $("#aiRetry").hidden = busy;
+  $("#aiCopy").disabled = busy || !$("#aiOutput").textContent;
+}
+
+$("#aiStop").onclick = () => aiAbort?.abort();
+$("#aiCopy").onclick = () => copyText($("#aiOutput").textContent.trim(), "Resposta copiada");
+aiModal.addEventListener("close", () => aiAbort?.abort());
+
+function renderAiSaved(it) {
+  const has = !!it?.ai_result && it.status === "done";
+  $("#aiSaved").hidden = !has;
+  if (!has) return;
+  $("#aiSavedText").textContent = it.ai_result;
+  $("#aiSavedInfo").textContent = it.ai_model || "";
+}
+$("#aiSavedCopy").onclick = () => {
+  const it = selected();
+  if (it?.ai_result) copyText(it.ai_result, "Resposta copiada");
+};
 
 // =====================================================================
 // Menu suspenso genérico
@@ -1175,6 +1434,7 @@ $$("dialog").forEach((d) =>
 function openSettings(pane = "general") {
   closeMenu();
   renderGeneral();
+  refreshLocalAI();
   renderTemplateList();
   renderClientList();
   if (!editingTemplate) editTemplate(defaultTemplate());
@@ -1213,7 +1473,92 @@ function renderGeneral() {
   const resolve = $("#resolveOnSend");
   resolve.checked = !!state.settings.resolve_on_send;
   resolve.onchange = () => saveSettings({ resolve_on_send: resolve.checked });
+  const vocabulary = $("#vocabulary");
+  if (document.activeElement !== vocabulary) vocabulary.value = state.settings.vocabulary || "";
+
+  const watch = $("#watchEnabled");
+  watch.checked = !!state.settings.watch_enabled;
+  $(".watch-folder").hidden = !watch.checked;
+  watch.onchange = () => {
+    if (watch.checked) askNotificationPermission();
+    saveSettings({ watch_enabled: watch.checked });
+  };
+  const folder = $("#watchFolder");
+  folder.placeholder = state.config.downloads || "";
+  if (document.activeElement !== folder) folder.value = state.settings.watch_folder || "";
+  folder.onchange = () => saveSettings({ watch_folder: folder.value.trim() });
 }
+
+async function refreshLocalAI() {
+  const help = $("#localAiHelp");
+  const select = $("#localModel");
+  const pullBtn = $("#pullModel");
+  let status;
+  try {
+    status = await api("GET", "/ai/local");
+  } catch {
+    status = { available: false, models: [] };
+  }
+  $("#localModelWrap").hidden = !status.models.length;
+  select.innerHTML = status.models
+    .map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.parameters ? ` · ${esc(m.parameters)}` : ""}</option>`)
+    .join("");
+  if (status.model) select.value = status.model;
+  select.onchange = () => saveSettings({ local_model: select.value });
+
+  const hasRecommended = status.models.some((m) => m.name === status.recommended);
+  pullBtn.hidden = !status.available || hasRecommended;
+  $("span", pullBtn).textContent = `Baixar ${status.recommended} (${status.recommended_size})`;
+  pullBtn.onclick = () => pullModel(status.recommended);
+
+  help.textContent = !status.available
+    ? "Abra o Ollama para usar. Se ainda não tem, baixe em ollama.com."
+    : status.models.length
+      ? "Responde aqui mesmo, sem internet. Modelos menores respondem mais rápido."
+      : `Nenhum modelo instalado. Baixe o recomendado (${status.recommended}), leve e bom em português.`;
+}
+
+async function pullModel(model) {
+  const help = $("#localAiHelp");
+  const pullBtn = $("#pullModel");
+  pullBtn.disabled = true;
+  help.textContent = `Baixando ${model}…`;
+  try {
+    const res = await fetch("/api/ai/local/pull", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Erro ${res.status}`);
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines.filter(Boolean)) {
+        const data = JSON.parse(line);
+        if (data.error) throw new Error(data.error);
+        help.textContent = data.total
+          ? `Baixando ${model}… ${Math.floor(((data.completed || 0) / data.total) * 100)}%`
+          : `Baixando ${model}… ${data.status || ""}`;
+      }
+    }
+    await saveSettings({ local_model: model });
+    toast(`Modelo ${model} instalado`);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    pullBtn.disabled = false;
+    refreshLocalAI();
+  }
+}
+
+const saveVocabulary = debounce(() => saveSettings({ vocabulary: $("#vocabulary").value }), 600);
+$("#vocabulary").addEventListener("input", saveVocabulary);
+$("#vocabulary").addEventListener("blur", () => saveVocabulary.flush());
 
 // ------------------------------------------------------------ prompts (CRUD)
 let editingTemplate = null;
@@ -1311,6 +1656,7 @@ function editClient(c) {
   clientForm.name.value = c?.name || "";
   clientForm.phone.value = c?.phone || "";
   clientForm.notes.value = c?.notes || "";
+  clientForm.vocabulary.value = c?.vocabulary || "";
   $("#deleteClient").hidden = !c;
   $("#clientUsage").textContent = c
     ? c.count ? `${c.count} ${c.count === 1 ? "áudio vinculado" : "áudios vinculados"}` : "Nenhum áudio vinculado"
@@ -1325,7 +1671,12 @@ $("#newClient").onclick = () => {
 
 clientForm.onsubmit = async (e) => {
   e.preventDefault();
-  const data = { name: clientForm.name.value.trim(), phone: clientForm.phone.value.trim(), notes: clientForm.notes.value };
+  const data = {
+    name: clientForm.name.value.trim(),
+    phone: clientForm.phone.value.trim(),
+    notes: clientForm.notes.value,
+    vocabulary: clientForm.vocabulary.value.trim(),
+  };
   try {
     const saved = editingClient
       ? await api("PATCH", `/clients/${editingClient.id}`, data)
@@ -1350,7 +1701,7 @@ $("#deleteClient").onclick = async () => {
   if (!ok) return;
   try {
     await api("DELETE", `/clients/${c.id}`);
-    state.items.forEach((it) => it.client_id === c.id && (it.client_id = null));
+    state.items.forEach((it) => it.client_id === c.id && (it.client_id = null));  // o cache é limpo em reloadClients
     await reloadClients();
     editClient(state.clients[0] || null);
     toast("Cliente excluído");
@@ -1663,14 +2014,26 @@ function formatSize(bytes) {
 }
 
 let toastTimer;
-function toast(message, isError = false) {
+function toast(message, isError = false, action = null) {
   const t = $("#toast");
   t.classList.toggle("error", isError);
+  t.classList.toggle("has-action", !!action);
   t.innerHTML = `${icon(isError ? "circle-alert" : "check")}<span></span>`;
   $("span", t).textContent = message;
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.onclick = () => {
+      t.classList.remove("show");
+      action.onClick();
+    };
+    t.append(b);
+  }
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+  toastTimer = setTimeout(() => t.classList.remove("show"), action ? 8000 : 2600);
 }
 
 init().catch((err) => toast(`Falha ao carregar: ${err.message}`, true));
