@@ -20,7 +20,9 @@ import db
 log = logging.getLogger("zapscribe")
 
 # "WhatsApp Ptt 2026-09-20 at 14.35.12.ogg", "WhatsApp Audio 2026-09-21 at 09.05.33 (1).opus"…
-WHATSAPP_FILE = re.compile(r"^WhatsApp (Ptt|Audio|Áudio)\b.*\.(ogg|opus|m4a|mp3|aac|amr|wav|mp4)$", re.IGNORECASE)
+# e os do Android: "PTT-20260921-WA0012.opus", "AUD-20260921-WA0003.opus"
+WHATSAPP_FILE = re.compile(r"^(WhatsApp (Ptt|Audio|Áudio)\b.*|(PTT|AUD)-\d{8}-WA\d+.*)\.(ogg|opus|m4a|mp3|aac|amr|wav|mp4)$",
+                           re.IGNORECASE)
 INTERVAL = float(os.environ.get("ZAPSCRIBE_WATCH_INTERVAL", "3"))
 # Espera o arquivo ficar este tempo sem mudar, para não pegar um download pela metade
 SETTLE_SECONDS = 2

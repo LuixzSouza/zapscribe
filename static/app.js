@@ -129,6 +129,8 @@ const el = {
 const selected = () => state.items.get(state.selectedId) || null;
 const clientById = (id) => state.clients.find((c) => c.id === id) || null;
 const itemDate = (it) => (it.recorded_at || it.created_at) * 1000;
+// Quando só o dia é conhecido (nome do arquivo sem horário), não mostra um horário inventado
+const itemWhen = (it) => (it.date_only ? formatDate(itemDate(it)) : formatDateTime(itemDate(it)));
 const defaultTemplate = () =>
   state.templates.find((t) => t.id === state.settings.template_id) || state.templates[0] || null;
 
@@ -534,7 +536,7 @@ function renderRow(it, create = false) {
   else sub.push(`${wordCount(it.text)} palavras`);
 
   const unread = it.status === "done" && !it.resolved;
-  const time = new Date(itemDate(it)).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const time = it.date_only ? "" : new Date(itemDate(it)).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
   row.innerHTML = `
     <label class="check"><input type="checkbox" ${state.checked.has(it.id) ? "checked" : ""} aria-label="Selecionar"><span class="box"></span></label>
@@ -767,7 +769,8 @@ function renderHead(it) {
     ? `${icon("circle-check")}<span>Resolvido</span>`
     : `${icon("circle-dashed")}<span>Pendente</span>`;
   el.resolved.title = it.resolved ? "Marcar como pendente" : "Marcar como resolvido";
-  el.date.textContent = formatDateTime(itemDate(it));
+  el.date.textContent = itemWhen(it);
+  el.date.title = it.date_only ? "O nome do arquivo só traz o dia, sem o horário" : "";
   if (document.activeElement !== el.notes) {
     el.notes.value = it.notes || "";
     autosize(el.notes);
@@ -1182,10 +1185,10 @@ function buildPrompt(template, list) {
   const clients = [...new Set(list.map((i) => clientById(i.client_id)?.name).filter(Boolean))];
   const texto = list.length === 1
     ? list[0].text
-    : list.map((it, i) => `[Áudio ${i + 1} · ${formatDateTime(itemDate(it))}]\n${it.text}`).join("\n\n");
+    : list.map((it, i) => `[Áudio ${i + 1} · ${itemWhen(it)}]\n${it.text}`).join("\n\n");
   const data = list.length === 1
-    ? formatDateTime(itemDate(list[0]))
-    : `${formatDateTime(itemDate(list[0]))} a ${formatDateTime(itemDate(list[list.length - 1]))}`;
+    ? itemWhen(list[0])
+    : `${itemWhen(list[0])} a ${itemWhen(list[list.length - 1])}`;
   const values = {
     texto,
     cliente: clients.length ? clients.join(" e ") : "um cliente",
@@ -1293,10 +1296,12 @@ function setAiState(stage, info = "") {
   $("#aiStop").hidden = !busy;
   $("#aiRetry").hidden = busy;
   $("#aiCopy").disabled = busy || !$("#aiOutput").textContent;
+  $("#aiSpeak").disabled = $("#aiCopy").disabled;
 }
 
 $("#aiStop").onclick = () => aiAbort?.abort();
 $("#aiCopy").onclick = () => copyText($("#aiOutput").textContent.trim(), "Resposta copiada");
+$("#aiSpeak").onclick = () => openSpeech($("#aiOutput").textContent.trim(), { auto: true });
 aiModal.addEventListener("close", () => aiAbort?.abort());
 
 function renderAiSaved(it) {
@@ -1310,6 +1315,258 @@ $("#aiSavedCopy").onclick = () => {
   const it = selected();
   if (it?.ai_result) copyText(it.ai_result, "Resposta copiada");
 };
+$("#aiSavedSpeak").onclick = () => {
+  const it = selected();
+  if (it?.ai_result) openSpeech(it.ai_result, { auto: true });
+};
+
+// ------------------------------------------------------------ texto para áudio
+
+const speechModal = $("#speechModal");
+const speechInput = $("#speechText");
+const SPEECH_SPEEDS = [0.9, 1, 1.1, 1.25];
+const BIG_DELETE = 80; // apagar mais que isto de uma vez oferece "Desfazer"
+let speech = { voices: [], offline_installed: false, offline_size: "", max_chars: 100000 };
+// O áudio continua sendo gerado com a janela fechada; o texto e o último áudio ficam
+// guardados no navegador, para nada se perder ao fechar a janela ou a página sem querer.
+let speechJob = null; // { ctrl, sig, done, total, joining, fallback }
+let speechResult = null; // { sig, url, voice, asked, duration }
+let speechError = "";
+let speechPrev = "";
+
+const voiceName = (id) => speech.voices.find((v) => v.id === id)?.name || id;
+const speechVoice = () => $("#speechVoice").value || state.settings.tts_voice;
+const speechSpeed = () => state.settings.tts_speed || 1;
+const speechSig = (text = speechInput.value) => JSON.stringify([text.trim(), speechVoice(), speechSpeed()]);
+
+try {
+  speechInput.value = store.get("speechDraft") || "";
+  speechResult = JSON.parse(store.get("speechLast") || "null");
+} catch { /* nada guardado */ }
+speechPrev = speechInput.value;
+
+const saveDraft = debounce(() => store.set("speechDraft", speechInput.value), 300);
+
+async function loadSpeech() {
+  try {
+    speech = await api("GET", "/speech");
+  } catch { /* mantém o que já tinha */ }
+}
+
+function voiceOptions(select, value) {
+  const group = (engine, label) => {
+    const options = speech.voices
+      .filter((v) => v.engine === engine)
+      .map((v) => {
+        const note = v.available ? "" : engine === "offline" ? " (baixe em Configurações)" : " (desligada)";
+        const lang = v.lang === "pt" ? "" : ` · ${LANGS[v.lang].toLowerCase()}`;
+        return `<option value="${esc(v.id)}"${v.available ? "" : " disabled"}>${esc(v.name)}${lang}${note}</option>`;
+      });
+    return `<optgroup label="${label}">${options.join("")}</optgroup>`;
+  };
+  select.innerHTML = group("online", "Online · mais natural") + group("offline", "No computador · sem internet");
+  select.value = value;
+  if (select.selectedIndex === -1 || select.selectedOptions[0]?.disabled) {
+    select.value = speech.voices.find((v) => v.available)?.id || "";
+  }
+}
+
+$("#openSpeech").onclick = () => openSpeech();
+
+async function openSpeech(text = "", { auto = false } = {}) {
+  closeMenu();
+  await loadSpeech();
+  if (text && text.trim() !== speechInput.value.trim()) setSpeechText(text, "O texto anterior foi substituído.");
+  voiceOptions($("#speechVoice"), state.settings.tts_voice);
+  renderSpeechSpeed();
+  renderSpeech();
+  if (!speechModal.open) speechModal.showModal();
+  const ready = speechResult?.sig === speechSig();
+  if (auto && speechInput.value.trim() && !ready && !speechJob) generateSpeech();
+  else if (!ready) speechInput.focus();
+}
+
+/** Troca o texto oferecendo "Desfazer" (para não perder o que estava escrito). */
+function setSpeechText(text, message) {
+  const before = speechInput.value;
+  speechInput.value = text;
+  speechPrev = text;
+  saveDraft();
+  if (before.trim()) offerUndo(before, message);
+}
+
+let undoTimer;
+function offerUndo(before, message) {
+  const bar = $("#speechUndo");
+  $("span", bar).textContent = message;
+  bar.hidden = false;
+  $("button", bar).onclick = () => {
+    bar.hidden = true;
+    speechInput.value = before;
+    speechPrev = before;
+    store.set("speechDraft", before);
+    speechError = "";
+    renderSpeech();
+    speechInput.focus();
+  };
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(() => (bar.hidden = true), 15000);
+}
+
+function renderSpeechSpeed() {
+  const current = speechSpeed();
+  $("#speechSpeed").innerHTML = SPEECH_SPEEDS.map(
+    (s) => `<button type="button" role="radio" data-speed="${s}" aria-checked="${s === current}">${String(s).replace(".", ",")}×</button>`
+  ).join("");
+  $$("#speechSpeed button").forEach((b) => (b.onclick = async () => {
+    await saveSettings({ tts_speed: Number(b.dataset.speed) });
+    renderSpeechSpeed();
+    renderSpeech();
+  }));
+}
+
+function renderSpeech() {
+  const n = speechInput.value.trim().length;
+  const count = $("#speechCount");
+  count.textContent = n ? `${n.toLocaleString("pt-BR")} / ${speech.max_chars.toLocaleString("pt-BR")}` : "";
+  count.classList.toggle("over", n > speech.max_chars);
+
+  const job = speechJob;
+  const ready = !job && speechResult?.sig === speechSig() ? speechResult : null;
+  $("#speechGo").hidden = !!job;
+  $("#speechStop").hidden = !job;
+  $("#speechGo").disabled = !n || n > speech.max_chars || !!ready;
+  $("#speechDownload").hidden = !ready;
+
+  const audio = $("#speechAudio");
+  audio.hidden = !ready;
+  if (ready && audio.getAttribute("src") !== ready.url) audio.src = ready.url;
+  if (!ready && !audio.paused) audio.pause();
+
+  const pct = job?.total ? Math.round((job.done / job.total) * 100) : 0;
+  $("#speechMeter").hidden = !job;
+  $(".meter-fill", $("#speechMeter")).style.width = `${job?.joining ? 100 : pct}%`;
+
+  const node = $("#speechState");
+  let label = "";
+  if (job) {
+    label = job.joining
+      ? "Juntando as partes…"
+      : job.total > 1
+        ? `Gerando o áudio… parte ${job.done} de ${job.total} (${pct}%)`
+        : "Gerando o áudio…";
+  } else if (speechError) {
+    label = speechError;
+  } else if (ready) {
+    label = `Pronto · ${voiceName(ready.voice)} · ${formatTime(ready.duration)}`;
+  } else if (speechResult && n) {
+    label = "O texto, a voz ou a velocidade mudaram desde o último áudio.";
+  }
+  node.textContent = label;
+  node.className = `ai-state${job ? " busy" : ""}${!job && speechError ? " error" : ""}`;
+
+  // A voz que leu pode não ser a escolhida: outro idioma (texto em inglês) ou a offline (sem internet)
+  const voice = speech.voices.find((v) => v.id === speechVoice());
+  const used = speech.voices.find((v) => v.id === (job?.fallback || ready?.voice));
+  const asked = speech.voices.find((v) => v.id === ready?.asked) || voice;
+  const fallback = used && asked && used.engine !== asked.engine;
+  const notes = [];
+  if (used && asked && used.lang !== asked.lang) {
+    notes.push(`Texto em ${LANGS[used.lang].toLowerCase()}: lido pela voz ${used.name}.`);
+  }
+  if (fallback) notes.push(`Sem acesso à voz online: usada a voz ${used.name}, do computador.`);
+  else if (voice?.engine === "online") {
+    notes.push(`Voz online: o texto é enviado para a Microsoft. Sem internet, ${speech.offline_installed ? "usa a voz do computador" : "baixe a voz offline em Configurações"}.`);
+  } else notes.push("Gerado aqui no computador, sem internet.");
+  $("#speechNote").textContent = notes.join(" ");
+
+  // O botão do topo mostra o andamento quando a janela está fechada
+  const top = $("#openSpeech");
+  top.classList.toggle("busy", !!job);
+  $("span", top).textContent = job ? `Gerando áudio… ${job.joining ? 100 : pct}%` : "Texto para áudio";
+}
+
+async function generateSpeech() {
+  const text = speechInput.value.trim();
+  if (!text || speechJob) return;
+  const voice = speechVoice();
+  const job = (speechJob = { ctrl: new AbortController(), sig: speechSig(), done: 0, total: 0, joining: false, fallback: null });
+  speechError = "";
+  renderSpeech();
+  try {
+    const res = await fetch("/api/speech", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, voice, speed: speechSpeed() }),
+      signal: job.ctrl.signal,
+    });
+    let final = null;
+    await readProgress(res, (data) => {
+      if (data.url) final = data;
+      else if (data.fallback) Object.assign(job, { fallback: data.fallback, done: 0 });
+      else if (data.joining) job.joining = true;
+      else Object.assign(job, { done: data.done, total: data.total });
+      renderSpeech();
+    });
+    if (!final) throw new Error("O áudio não foi gerado. Tente de novo.");
+    speechResult = { sig: job.sig, url: final.url, voice: final.voice, asked: voice, duration: final.duration };
+    store.set("speechLast", JSON.stringify(speechResult));
+    speechJob = null;
+    renderSpeech();
+    if (speechModal.open) $("#speechAudio").play().catch(() => { /* o navegador pode bloquear o autoplay */ });
+    else toast(`Áudio pronto (${formatTime(final.duration)})`, false, { label: "Abrir", onClick: () => openSpeech() });
+  } catch (err) {
+    speechJob = null;
+    if (err.name !== "AbortError") {
+      speechError = err.message;
+      if (!speechModal.open) toast(err.message, true, { label: "Abrir", onClick: () => openSpeech() });
+    }
+    renderSpeech();
+  }
+}
+
+$("#speechGo").onclick = generateSpeech;
+$("#speechStop").onclick = () => speechJob?.ctrl.abort();
+speechInput.addEventListener("input", () => {
+  const removed = speechPrev.length - speechInput.value.length;
+  if (removed >= BIG_DELETE) offerUndo(speechPrev, `${removed.toLocaleString("pt-BR")} caracteres apagados.`);
+  speechPrev = speechInput.value;
+  speechError = "";
+  saveDraft();
+  renderSpeech();
+});
+speechInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (!$("#speechGo").disabled && !speechJob) generateSpeech();
+  }
+});
+$("#speechVoice").onchange = () => {
+  saveSettings({ tts_voice: $("#speechVoice").value });
+  renderSpeech();
+};
+$("#speechDownload").onclick = () => {
+  if (!speechResult) return;
+  const words = speechInput.value.trim().split(/\s+/).slice(0, 6).join(" ").replace(/[\\/:*?"<>|]+/g, "");
+  downloadUrl(speechResult.url, `Áudio - ${words || "Zapscribe"}.ogg`);
+};
+$("#speechAudio").addEventListener("error", () => {
+  // O áudio guardado foi apagado (mais de 30 dias): basta gerar de novo
+  if (!speechResult || !$("#speechAudio").getAttribute("src")) return;
+  speechResult = null;
+  store.set("speechLast", "null");
+  $("#speechAudio").removeAttribute("src");
+  renderSpeech();
+});
+speechModal.addEventListener("close", () => {
+  saveDraft.flush();
+  $("#speechAudio").pause();
+});
+window.addEventListener("beforeunload", (e) => {
+  saveDraft.flush();
+  if (speechJob) e.preventDefault(); // pergunta antes de fechar a página no meio da geração
+});
+renderSpeech();
 
 // =====================================================================
 // Menu suspenso genérico
@@ -1425,16 +1682,20 @@ const settingsModal = $("#settingsModal");
 
 $("#openSettings").onclick = () => openSettings("general");
 $$("[data-close]").forEach((b) => (b.onclick = () => b.closest("dialog").close()));
-$$("dialog").forEach((d) =>
+$$("dialog").forEach((d) => {
+  // Fecha ao clicar fora, mas não ao selecionar um texto e soltar o mouse fora da janela
+  let pressedOutside = false;
+  d.addEventListener("mousedown", (e) => (pressedOutside = e.target === d));
   d.addEventListener("click", (e) => {
-    if (e.target === d) d.close();
-  })
-);
+    if (e.target === d && pressedOutside) d.close();
+  });
+});
 
 function openSettings(pane = "general") {
   closeMenu();
   renderGeneral();
   refreshLocalAI();
+  refreshSpeechSettings();
   renderTemplateList();
   renderClientList();
   if (!editingTemplate) editTemplate(defaultTemplate());
@@ -1518,6 +1779,59 @@ async function refreshLocalAI() {
       : `Nenhum modelo instalado. Baixe o recomendado (${status.recommended}), leve e bom em português.`;
 }
 
+async function refreshSpeechSettings() {
+  await loadSpeech();
+  const select = $("#ttsVoice");
+  voiceOptions(select, state.settings.tts_voice);
+  select.onchange = () => saveSettings({ tts_voice: select.value });
+
+  const btn = $("#downloadVoice");
+  btn.hidden = speech.offline_installed;
+  $("span", btn).textContent = `Baixar (${speech.offline_size})`;
+  btn.onclick = downloadOfflineVoice;
+  $("#offlineVoiceHelp").textContent = speech.offline_installed
+    ? "Instalada (Dora e Alex; Heart e Michael em inglês). Usada sozinha quando não há internet."
+    : "Gera áudio sem internet e é usada sozinha quando a voz online não responde. Soa um pouco menos natural.";
+}
+
+async function downloadOfflineVoice() {
+  const btn = $("#downloadVoice");
+  const help = $("#offlineVoiceHelp");
+  btn.disabled = true;
+  help.textContent = "Baixando a voz offline…";
+  try {
+    const res = await fetch("/api/speech/offline", { method: "POST" });
+    await readProgress(res, (data) => {
+      help.textContent = `Baixando a voz offline… ${Math.floor((data.completed / data.total) * 100)}%`;
+    });
+    toast("Voz offline instalada");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    refreshSpeechSettings();
+  }
+}
+
+/** Lê uma resposta em linhas JSON, chamando onData a cada linha ({error} interrompe). */
+async function readProgress(res, onData) {
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Erro ${res.status}`);
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines.filter(Boolean)) {
+      const data = JSON.parse(line);
+      if (data.error) throw new Error(data.error);
+      onData(data);
+    }
+  }
+}
+
 async function pullModel(model) {
   const help = $("#localAiHelp");
   const pullBtn = $("#pullModel");
@@ -1529,23 +1843,11 @@ async function pullModel(model) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model }),
     });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Erro ${res.status}`);
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += value;
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines.filter(Boolean)) {
-        const data = JSON.parse(line);
-        if (data.error) throw new Error(data.error);
-        help.textContent = data.total
-          ? `Baixando ${model}… ${Math.floor(((data.completed || 0) / data.total) * 100)}%`
-          : `Baixando ${model}… ${data.status || ""}`;
-      }
-    }
+    await readProgress(res, (data) => {
+      help.textContent = data.total
+        ? `Baixando ${model}… ${Math.floor(((data.completed || 0) / data.total) * 100)}%`
+        : `Baixando ${model}… ${data.status || ""}`;
+    });
     await saveSettings({ local_model: model });
     toast(`Modelo ${model} instalado`);
   } catch (err) {
@@ -1932,7 +2234,7 @@ function combinedText(list) {
   return list
     .map((it) => {
       const client = clientById(it.client_id);
-      const head = [it.title, formatDateTime(itemDate(it)), client?.name].filter(Boolean).join(" · ");
+      const head = [it.title, itemWhen(it), client?.name].filter(Boolean).join(" · ");
       return `${head}\n${it.text}`;
     })
     .join("\n\n---\n\n");
@@ -2001,6 +2303,10 @@ function formatTime(sec) {
 
 function formatSeconds(sec) {
   return sec < 60 ? `${sec.toFixed(1).replace(".", ",")}s` : formatTime(sec);
+}
+
+function formatDate(ms) {
+  return new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
 function formatDateTime(ms) {

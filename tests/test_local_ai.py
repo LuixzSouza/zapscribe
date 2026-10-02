@@ -17,7 +17,7 @@ def fake():
 
 @pytest.fixture(scope="module")
 def server_env(fake):
-    return {"OLLAMA_HOST": fake.url}
+    return {"OLLAMA_HOST": fake.url, "ZAPSCRIBE_TTS_ONLINE": "0"}
 
 
 @pytest.fixture(scope="module")
@@ -148,6 +148,14 @@ def test_ui_resposta_aparece_e_fica_salva(page, api, ptt, server):
     row(page, "Oi, tudo bem").click()
     page.wait_for_selector("#aiSaved:not([hidden])")
     assert "qwen3:4b" in page.inner_text("#aiSavedInfo")
+
+
+def test_ui_ouvir_a_resposta(page):
+    page.click("#aiSavedSpeak")
+    page.wait_for_selector("#speechModal[open]")
+    assert page.input_value("#speechText") == page.inner_text("#aiSavedText")
+    page.wait_for_selector("#speechState:not(.busy)", timeout=60000)  # gera sozinho (offline ou erro sem a voz)
+    page.click("#speechModal [data-close]")
 
 
 def test_ui_parar(page, fake):

@@ -40,6 +40,9 @@
             <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
           </div>
         </div>
+        <button class="btn secondary" id="openSpeech" title="Transformar um texto em áudio">
+          <svg class="i"><use href="/static/vendor/icons.svg#i-volume-2"/></svg><span>Texto para áudio</span>
+        </button>
         <button class="btn ghost icon-only" id="openSettings" title="Configurações">
           <svg class="i"><use href="/static/vendor/icons.svg#i-settings"/></svg>
         </button>
@@ -173,6 +176,7 @@
             <div class="transcript-bar">
               <span class="section-label">Resposta da IA local</span>
               <span class="transcript-info" id="aiSavedInfo"></span>
+              <button class="btn ghost sm" id="aiSavedSpeak"><svg class="i"><use href="/static/vendor/icons.svg#i-volume-2"/></svg>Ouvir</button>
               <button class="btn ghost sm" id="aiSavedCopy"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg>Copiar</button>
             </div>
             <div class="ai-text" id="aiSavedText"></div>
@@ -262,6 +266,23 @@
         </label>
         <div class="form-row">
           <div>
+            <div class="form-label">Voz do texto para áudio</div>
+            <div class="form-help">As vozes online soam mais naturais, mas o texto é enviado para a Microsoft. Um texto em inglês é lido sozinho por uma voz em inglês.</div>
+          </div>
+          <div class="select">
+            <select id="ttsVoice"></select>
+            <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Voz offline</div>
+            <div class="form-help" id="offlineVoiceHelp"></div>
+          </div>
+          <button type="button" class="btn secondary sm" id="downloadVoice" hidden><svg class="i"><use href="/static/vendor/icons.svg#i-download"/></svg><span></span></button>
+        </div>
+        <div class="form-row">
+          <div>
             <div class="form-label">Backup</div>
             <div class="form-help">Banco e áudios num arquivo .zip. Para restaurar, descompacte na pasta <code>data/</code> do Zapscribe.</div>
           </div>
@@ -348,7 +369,48 @@
       <span class="spacer"></span>
       <button class="btn secondary sm" id="aiStop"><svg class="i"><use href="/static/vendor/icons.svg#i-square"/></svg>Parar</button>
       <button class="btn secondary sm" id="aiRetry"><svg class="i"><use href="/static/vendor/icons.svg#i-rotate-ccw"/></svg>Gerar de novo</button>
+      <button class="btn secondary sm" id="aiSpeak"><svg class="i"><use href="/static/vendor/icons.svg#i-volume-2"/></svg>Ouvir</button>
       <button class="btn primary sm" id="aiCopy"><svg class="i"><use href="/static/vendor/icons.svg#i-copy"/></svg>Copiar resposta</button>
+    </div>
+  </dialog>
+
+  <!-- ============================== Texto para áudio -->
+  <dialog class="modal speech-modal" id="speechModal">
+    <div class="modal-head">
+      <h2><span class="ai-badge"><svg class="i"><use href="/static/vendor/icons.svg#i-volume-2"/></svg></span><span>Texto para áudio</span></h2>
+      <button class="btn ghost icon-only" data-close title="Fechar"><svg class="i"><use href="/static/vendor/icons.svg#i-x"/></svg></button>
+    </div>
+    <div class="speech-body">
+      <textarea class="input" id="speechText" rows="7" placeholder="Escreva ou cole o texto que vai virar áudio… (fica salvo mesmo se você fechar a janela)"></textarea>
+      <div class="speech-undo" id="speechUndo" hidden>
+        <svg class="i"><use href="/static/vendor/icons.svg#i-rotate-ccw"/></svg><span></span>
+        <button type="button" class="btn ghost sm">Desfazer</button>
+      </div>
+      <div class="speech-controls">
+        <div class="field">
+          <span class="field-label">Voz</span>
+          <div class="select">
+            <select id="speechVoice" aria-label="Voz"></select>
+            <svg class="i"><use href="/static/vendor/icons.svg#i-chevron-down"/></svg>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Velocidade</span>
+          <div class="segmented" id="speechSpeed" role="radiogroup" aria-label="Velocidade"></div>
+        </div>
+        <span class="spacer"></span>
+        <span class="speech-count" id="speechCount"></span>
+      </div>
+      <div class="meter" id="speechMeter" hidden><div class="meter-fill"></div></div>
+      <audio id="speechAudio" controls hidden></audio>
+      <div class="form-help" id="speechNote"></div>
+    </div>
+    <div class="form-actions ai-actions">
+      <span class="ai-state" id="speechState"></span>
+      <span class="spacer"></span>
+      <button class="btn secondary sm" id="speechDownload" hidden><svg class="i"><use href="/static/vendor/icons.svg#i-download"/></svg>Baixar .ogg</button>
+      <button class="btn secondary sm" id="speechStop" hidden><svg class="i"><use href="/static/vendor/icons.svg#i-square"/></svg>Parar</button>
+      <button class="btn primary sm" id="speechGo" title="Ctrl+Enter"><svg class="i"><use href="/static/vendor/icons.svg#i-volume-2"/></svg>Gerar áudio</button>
     </div>
   </dialog>
 

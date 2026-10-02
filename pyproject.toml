@@ -8,9 +8,11 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "edge-tts>=7.2.8",
     "fastapi>=0.141.1",
     "faster-whisper>=1.2.1",
     "httpx>=0.28",
+    "kokoro-onnx>=0.6.1",
     "pillow>=12.3.0",
     "pystray>=0.19.5",
     "python-multipart>=0.0.32",

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 import db
 import local_ai
+import speech
 import transcriber as transcriber_mod
 import watcher
 from transcriber import DEFAULT_MODEL, MODELS, PARALLEL, PRECISE_MODEL, Transcriber
@@ -36,6 +37,8 @@ transcriber = Transcriber()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.init()
+    fix_dates()
+    speech.cleanup()
     await transcriber.start()
     watch = asyncio.create_task(watcher.run(import_file))
     yield
@@ -120,19 +123,50 @@ async def events(request: Request):
 
 # ------------------------------------------------------------------ transcrições
 
-WHATSAPP_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\D+?(\d{2})\.(\d{2})(?:\.(\d{2}))?")
+# "WhatsApp Audio 2026-09-21 at 09.05.33.ogg" (com horário) ou "WhatsApp Audio 2026-09-21.ogg" (só o dia)
+WHATSAPP_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:\D+?(\d{2})\.(\d{2})(?:\.(\d{2}))?)?")
+# WhatsApp do Android: "PTT-20260921-WA0012.opus" (mensagem de voz), "AUD-20260921-WA0003.opus" (só o dia)
+ANDROID_FILE = re.compile(r"^(?:PTT|AUD)-(\d{4})(\d{2})(\d{2})-WA\d+", re.IGNORECASE)
 
 
-def recorded_at_from(filename: str, last_modified_ms: float | None) -> float | None:
-    """Data do áudio: a do nome do arquivo do WhatsApp ou a data de modificação."""
-    if "whatsapp" in filename.lower() and (m := WHATSAPP_DATE.search(filename)):
-        y, mo, d, h, mi, s = (int(x or 0) for x in m.groups())
-        return time.mktime((y, mo, d, h, mi, s, 0, 0, -1))
-    return last_modified_ms / 1000 if last_modified_ms else None
+def is_whatsapp(filename: str) -> bool:
+    return "whatsapp" in filename.lower() or bool(ANDROID_FILE.match(filename))
+
+
+def recorded_at_from(filename: str, last_modified_ms: float | None) -> tuple[float | None, bool]:
+    """Data do áudio e se só o dia é conhecido.
+
+    Vem do nome do arquivo do WhatsApp; quando o nome traz só o dia, o horário vem do arquivo
+    se ele for do mesmo dia (no celular, é a hora em que o áudio chegou). Se não for (ex.: baixado
+    dias depois), guarda só o dia, em vez de um horário errado. Sem data no nome, usa a do arquivo.
+    """
+    modified = last_modified_ms / 1000 if last_modified_ms else None
+    m = ANDROID_FILE.match(filename) or ("whatsapp" in filename.lower() and WHATSAPP_DATE.search(filename))
+    if not m:
+        return modified, False
+    y, mo, d, h, mi, s = (int(x or 0) for x in (*m.groups(), None, None, None)[:6])
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return modified, False
+    if m.lastindex and m.lastindex >= 4 and m.group(4) is not None:
+        return time.mktime((y, mo, d, h, mi, s, 0, 0, -1)), False
+    if modified and time.localtime(modified)[:3] == (y, mo, d):
+        return modified, False
+    return time.mktime((y, mo, d, 12, 0, 0, 0, 0, -1)), True
+
+
+def fix_dates() -> None:
+    """Corrige áudios importados antes de o Zapscribe ler a data de nomes que só têm o dia
+    (eles ficavam com a data em que o arquivo foi salvo)."""
+    for item in db.list_transcriptions():
+        if item["date_only"] or not item["recorded_at"]:
+            continue
+        recorded_at, date_only = recorded_at_from(item["original_name"], item["recorded_at"] * 1000)
+        if date_only or abs(recorded_at - item["recorded_at"]) > 1:
+            db.update_transcription(item["id"], recorded_at=recorded_at, date_only=date_only)
 
 
 def initial_title(filename: str) -> str:
-    if "whatsapp" in filename.lower():
+    if is_whatsapp(filename):
         return "Áudio do WhatsApp"
     return Path(filename).stem
 
@@ -142,7 +176,7 @@ def list_transcriptions():
     return db.list_transcriptions()
 
 
-def register_audio(file_name: str, sha256: str, size: int, original: str, recorded_at: float | None,
+def register_audio(file_name: str, sha256: str, size: int, original: str, last_modified_ms: float | None,
                    model: str = DEFAULT_MODEL, language: str = "pt", client_id: int | None = None) -> dict:
     """Cria a transcrição de um arquivo já salvo em AUDIO_DIR e o põe na fila.
 
@@ -152,12 +186,14 @@ def register_audio(file_name: str, sha256: str, size: int, original: str, record
         (db.AUDIO_DIR / file_name).unlink(missing_ok=True)
         return {**db.get_transcription(existing, full=False), "duplicate": True}
 
+    recorded_at, date_only = recorded_at_from(original, last_modified_ms)
     id_ = db.create_transcription(
         title=initial_title(original),
         original_name=original,
         file_name=file_name,
         size=size,
         recorded_at=recorded_at,
+        date_only=date_only,
         model=model,
         language=language,
         client_id=client_id,
@@ -194,8 +230,7 @@ async def create_transcription(
             sha.update(chunk)
             size += len(chunk)
 
-    item = register_audio(file_name, sha.hexdigest(), size, original, recorded_at_from(original, last_modified),
-                          model, language, client_id)
+    item = register_audio(file_name, sha.hexdigest(), size, original, last_modified, model, language, client_id)
     # O mesmo áudio enviado de novo: devolve o que já existe em vez de duplicar
     return JSONResponse(item) if item.get("duplicate") else item
 
@@ -210,7 +245,7 @@ def import_file(path: Path) -> dict:
             out.write(chunk)
             sha.update(chunk)
             size += len(chunk)
-    return register_audio(file_name, sha.hexdigest(), size, path.name, recorded_at_from(path.name, path.stat().st_mtime * 1000))
+    return register_audio(file_name, sha.hexdigest(), size, path.name, path.stat().st_mtime * 1000)
 
 
 @app.get("/api/transcriptions/{id_}")
@@ -497,6 +532,71 @@ async def local_pull(body: LocalPull):
             async for data in progress:
                 yield json.dumps(data) + "\n"
         except local_ai.LocalAIError as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    return StreamingResponse(output(), media_type="application/x-ndjson")
+
+
+# ------------------------------------------------------------------ texto para áudio
+
+@app.get("/api/speech")
+def speech_status():
+    return {
+        "voices": speech.voices(),
+        "default": speech.DEFAULT_VOICE,
+        "online": speech.ONLINE,
+        "offline_installed": speech.offline_installed(),
+        "offline_size": speech.OFFLINE_SIZE,
+        "max_chars": speech.MAX_CHARS,
+    }
+
+
+class SpeechIn(BaseModel):
+    text: str = Field(min_length=1)
+    voice: str | None = None  # vazio = a dos ajustes
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+
+
+@app.post("/api/speech")
+async def create_speech(body: SpeechIn):
+    """Gera o áudio, com o progresso em linhas JSON. A última traz o arquivo ({file, voice, duration})."""
+    voice = body.voice or db.get_settings()["tts_voice"]
+    try:
+        speech.prepare(body.text, voice)  # texto ou voz inválidos: erro normal, antes de começar
+    except speech.SpeechError as e:
+        raise HTTPException(e.status, str(e))
+
+    async def output():
+        try:
+            async for event in speech.synthesize(body.text, voice, body.speed):
+                if "file" in event:
+                    event["url"] = f"/api/speech/files/{event.pop('file')}"
+                yield json.dumps(event) + "\n"
+        except speech.SpeechError as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+        except Exception as e:
+            speech.log.exception("Erro ao gerar áudio")
+            yield json.dumps({"error": f"Erro ao gerar o áudio: {e}"}) + "\n"
+
+    return StreamingResponse(output(), media_type="application/x-ndjson")
+
+
+@app.get("/api/speech/files/{name}")
+def speech_file(name: str):
+    path = speech.file_path(name)
+    if not path:
+        raise not_found("Áudio")
+    return FileResponse(path, media_type="audio/ogg")
+
+
+@app.post("/api/speech/offline")
+async def download_offline_voice():
+    """Baixa a voz offline, com o progresso em linhas JSON (igual ao download de modelos da IA local)."""
+    async def output():
+        try:
+            async for data in speech.download_offline():
+                yield json.dumps(data) + "\n"
+        except speech.SpeechError as e:
             yield json.dumps({"error": str(e)}) + "\n"
 
     return StreamingResponse(output(), media_type="application/x-ndjson")

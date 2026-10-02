@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     resolved           INTEGER NOT NULL DEFAULT 0,
     sha256             TEXT,
     ai_result          TEXT NOT NULL DEFAULT '',
-    ai_model           TEXT NOT NULL DEFAULT ''
+    ai_model           TEXT NOT NULL DEFAULT '',
+    date_only          INTEGER NOT NULL DEFAULT 0
 )"""
 
 SCHEMA = f"""
@@ -102,10 +103,12 @@ DEFAULT_SETTINGS = {
     "watch_enabled": False,    # importar sozinho os áudios do WhatsApp salvos numa pasta
     "watch_folder": "",        # vazio = pasta Downloads
     "watch_since": 0,          # só importa arquivos salvos depois disto (controlado pelo servidor)
+    "tts_voice": "pt-BR-AntonioNeural",  # voz do texto para áudio (ver speech.VOICES)
+    "tts_speed": 1.0,          # velocidade da voz (0,5 a 2)
 }
 
 SUMMARY_COLUMNS = (
-    "id, title, title_auto, original_name, size, duration, recorded_at, created_at, updated_at, "
+    "id, title, title_auto, original_name, size, duration, recorded_at, date_only, created_at, updated_at, "
     "status, progress, model, language, detected_language, text, elapsed, error, client_id, notes, resolved"
 )
 
@@ -127,6 +130,7 @@ def init() -> None:
     _add_column("clients", "vocabulary", "TEXT NOT NULL DEFAULT ''")
     _add_column("transcriptions", "ai_result", "TEXT NOT NULL DEFAULT ''")
     _add_column("transcriptions", "ai_model", "TEXT NOT NULL DEFAULT ''")
+    _add_column("transcriptions", "date_only", "INTEGER NOT NULL DEFAULT 0")  # só o dia é conhecido
     _conn.execute("CREATE INDEX IF NOT EXISTS transcriptions_sha256 ON transcriptions (sha256)")
     if not _conn.execute("SELECT 1 FROM templates LIMIT 1").fetchone():
         _conn.executemany(
@@ -185,6 +189,7 @@ def _update(table: str, id_: int, fields: dict) -> None:
 def _transcription(row: dict) -> dict:
     row["resolved"] = bool(row["resolved"])
     row["title_auto"] = bool(row["title_auto"])
+    row["date_only"] = bool(row["date_only"])
     if "segments" in row:
         row["segments"] = json.loads(row["segments"])
     return row
@@ -216,7 +221,7 @@ def create_transcription(**fields) -> int:
 def update_transcription(id_: int, **fields) -> None:
     if "segments" in fields:
         fields["segments"] = json.dumps(fields["segments"], ensure_ascii=False)
-    for key in ("resolved", "title_auto"):
+    for key in ("resolved", "title_auto", "date_only"):
         if key in fields:
             fields[key] = int(fields[key])
     fields["updated_at"] = time.time()
